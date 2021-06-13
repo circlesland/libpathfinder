@@ -2,6 +2,7 @@
 
 #include "encoding.h"
 #include "exceptions.h"
+#include "log.h"
 
 #include <utility>
 
@@ -9,6 +10,8 @@ using namespace std;
 
 pair<size_t, DB> BinaryImporter::readBlockNumberAndDB()
 {
+    log_debug("-> readBlockNumberAndDB()");
+
 	size_t blockNumber = readSize();
 	readAddresses();
 
@@ -22,6 +25,8 @@ pair<size_t, DB> BinaryImporter::readBlockNumberAndDB()
 	}
 
 	db.computeEdges();
+
+    log_debug("<- readBlockNumberAndDB()");
 
 	return {blockNumber, move(db)};
 }
@@ -82,10 +87,12 @@ pair<Address, Safe> BinaryImporter::readSafe()
 
 void BinaryImporter::readAddresses()
 {
+    log_debug("-> readAddresses()");
 	size_t length = readSize();
 	for (size_t i = 0; i < length; ++i)
 	{
 		m_addresses.push_back({});
 		m_input.read(reinterpret_cast<char*>(&(m_addresses.back().address[0])), 20);
 	}
+    log_debug("<- readAddresses()");
 }

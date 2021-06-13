@@ -1,10 +1,7 @@
 #include "types.h"
-
 #include "exceptions.h"
-
 #include "db.h"
-
-#include <fstream>
+#include "log.h"
 
 using namespace std;
 
@@ -46,45 +43,6 @@ Token* DB::tokenMaybe(Address const& _address)
 	return it == tokens.end() ? nullptr : &it->second;
 }
 
-/*
-void DB::importFromTheGraph(json const& _safesJson)
-{
-	safes.clear();
-	tokens.clear();
-
-	for (json const& safe: _safesJson)
-	{
-		Safe s;
-		s.organization = (safe.contains("organization") && safe["organization"].is_boolean() && safe["organization"]);
-		Address address = Address(string(safe["id"]));
-		for (auto const& balance: safe["balances"])
-		{
-			Int balanceAmount = Int(string(balance["amount"]));
-			Token t{Address(balance["token"]["id"]), Address(balance["token"]["owner"]["id"])};
-			if (t.safeAddress == address)
-				s.tokenAddress = t.address;
-			tokens.insert({t.address, t});
-			s.balances[t.address] = balanceAmount;
-		}
-		safes[address] = move(s);
-
-		for (auto const& connections: {safe["outgoing"], safe["incoming"]})
-			for (auto const& connection: connections)
-			{
-				Address sendTo(connection["canSendToAddress"]);
-				Address user(connection["userAddress"]);
-				uint32_t limitPercentage = uint32_t(std::stoi(string(connection["limitPercentage"])));
-				require(limitPercentage <= 100);
-				if (sendTo != Address{} && user != Address{} && sendTo != user && limitPercentage > 0)
-					if (safes.count(user))
-						safes.at(user).limitPercentage[sendTo] = limitPercentage;
-			}
-	}
-	computeEdges();
-}
-*/
-
-
 Int DB::limit(Address const& _user, Address const& _canSendTo) const
 {
 	Safe const* senderSafe = safeMaybe(_user);
@@ -112,16 +70,32 @@ Int DB::limit(Address const& _user, Address const& _canSendTo) const
 
 void DB::computeEdges()
 {
-	cerr << "Computing Edges from " << safes.size() << " safes..." << endl;
+	log_debug("-> DB::computeEdges()");
+	log_debug("   DB::computeEdges(): Computing Edges from %li safes ...", safes.size());
+
+	time_t start = time(NULL);
+
 	m_edges.clear();
 	m_flowGraph.clear();
-	for (auto const& safe: safes)
+
+	for (auto const& safe: safes) {
 		computeEdgesFrom(safe.first);
-	cerr << "Created " << m_edges.size() << " edges..." << endl;
+	}
+
+	time_t end = time(NULL);
+	auto dura = end - start;
+	auto duration = (unsigned long)dura;
+	auto safesPerSec = safes.size() / duration;
+	auto edgesPerSec = m_edges.size() / duration;
+
+	log_debug("   DB::computeEdges(): Computed %li edges in %li seconds (%i edges/s; %i safes/s)", m_edges.size(), duration, edgesPerSec, safesPerSec);
+	log_debug("<- DB::computeEdges()");
 }
 
 void DB::computeEdgesFrom(Address const& _user)
 {
+	//log_trace("-> DB::computeEdgesFrom(_user: '%s')", to_string(_user).c_str());
+
 	Safe const* safe = safeMaybe(_user);
 	if (!safe)
 		return;
@@ -154,6 +128,8 @@ void DB::computeEdgesFrom(Address const& _user)
 					m_flowGraph[_user][make_pair(_user, tokenAddress)] = balance;
 					m_flowGraph[make_pair(_user, tokenAddress)][token->safeAddress] = balance;
 				}
+
+	//log_trace("<- DB::computeEdgesFrom(_user: '%s')", to_string(_user).c_str());
 }
 
 void DB::computeEdgesTo(Address const& _sendTo)

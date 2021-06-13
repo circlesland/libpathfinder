@@ -1,9 +1,9 @@
 #include "flow.h"
 
 #include <queue>
-#include <iostream>
 #include <variant>
 #include <functional>
+#include "log.h"
 
 using namespace std;
 
@@ -24,35 +24,56 @@ template <class T, class U> vector<T>& operator+=(vector<T>& _a, U&& _b)
 template <class K, class V, class F>
 void erase_if(map<K, V>& _container, F const& _fun)
 {
+    log_debug("-> erase_if(_container: %li, _fun: F)", _container.size());
+
 	for (auto it = _container.begin(); it != _container.end();)
 		 if (_fun(*it))
 			it = _container.erase(it);
 		 else
 			++it;
+
+    log_debug("<- erase_if(_container: %li, _fun: F)", _container.size());
 }
+
+static map<Node, map<Node, Int>> _adjacencies;
+static bool _adjacenciesDirty = true;
 
 /// Turns the edge set into an adjacency list.
 /// At the same time, it generates new pseudo-nodes to cope with the multi-edges.
 map<Node, map<Node, Int>> computeAdjacencies(set<Edge> const& _edges)
 {
-	map<Node, map<Node, Int>> adjacencies;
+    log_debug("-> computeAdjacencies(_edges: %li)", _edges.size());
+
+    if (!_adjacenciesDirty) {
+        log_debug("<- computeAdjacencies(_edges: %li) - cached", _edges.size());
+        return _adjacencies;
+    }
+
+    _adjacencies = map<Node, map<Node, Int>>();
+
 	for (Edge const& edge: _edges)
 	{
+        auto pseudo = pseudoNode(edge);
 		// One edge from "from" to "from x token" with a capacity as the max over
 		// all contributing edges (the balance of the sender)
-		adjacencies[edge.from][pseudoNode(edge)] = max(edge.capacity, adjacencies[edge.from][pseudoNode(edge)]);
+        _adjacencies[edge.from][pseudo] = max(edge.capacity, _adjacencies[edge.from][pseudo]);
 		// Another edge from "from x token" to "to" with its own capacity (based on the trust)
-		adjacencies[pseudoNode(edge)][edge.to] = edge.capacity;
+        _adjacencies[pseudo][edge.to] = edge.capacity;
 	}
-	return adjacencies;
+
+	log_debug("<- computeAdjacencies(_edges: %li)", _edges.size());
+    _adjacenciesDirty = false;
+	return _adjacencies;
 }
 
 vector<pair<Node, Int>> sortedByCapacity(map<Node, Int> const& _capacities)
 {
+    log_debug("-> sortedByCapacity(_capacities: %li)", _capacities.size());
 	vector<pair<Node, Int>> r(_capacities.begin(), _capacities.end());
 	sort(r.begin(), r.end(), [](pair<Node, Int> const& _a, pair<Node, Int> const& _b) {
 		return make_pair(get<1>(_a), get<0>(_a)) > make_pair(get<1>(_b), get<0>(_b));
 	});
+    log_debug("<- sortedByCapacity(_capacities: %li)", _capacities.size());
 	return r;
 }
 
@@ -94,6 +115,9 @@ pair<Int, map<Node, Node>> augmentingPath(
 /// we cannot transfer the full balance and start over.
 vector<Edge> extractNextTransfers(map<Node, map<Node, Int>>& _usedEdges, map<Address, Int>& _nodeBalances)
 {
+    auto initialEdgesSize = _usedEdges.size();
+    auto initialNodesSize = _nodeBalances.size();
+    log_debug("-> extractNextTransfers(_usedEdges: %li, _nodeBalances: %li)", initialEdgesSize, initialNodesSize);
 	vector<Edge> transfers;
 
 	for (auto& [node, balance]: _nodeBalances)
@@ -121,14 +145,23 @@ vector<Edge> extractNextTransfers(map<Node, map<Node, Int>>& _usedEdges, map<Add
 			}
 		}
 
+    log_debug("   extractNextTransfers(_usedEdges: %li, _nodeBalances: %li): '_usedEdges' size: %li, '_nodeBalances' size: %li", initialEdgesSize, initialNodesSize, _usedEdges.size(), _nodeBalances.size());
 	erase_if(_nodeBalances, [](auto& _a) { return _a.second == Int(0); });
-
+    log_debug("   extractNextTransfers(_usedEdges: %li, _nodeBalances: %li): '_usedEdges' size: %li, '_nodeBalances' size: %li", initialEdgesSize, initialNodesSize, _usedEdges.size(), _nodeBalances.size());
+    log_debug("<- extractNextTransfers(_usedEdges: %li, _nodeBalances: %li)", initialEdgesSize, initialNodesSize);
 	return transfers;
 }
 
 
 vector<Edge> extractTransfers(Address const& _source, Address const& _sink, Int _amount, map<Node, map<Node, Int>> _usedEdges)
 {
+    auto initialEdgesSize = _usedEdges.size();
+    log_debug("-> extractTransfers(_source: '%s', _sink: '%s', _amount: %s, _usedEdges: %li, _nodeBalances: %li)",
+              to_string(_source).c_str(),
+              to_string(_sink).c_str(),
+              to_string(_amount).c_str(),
+              initialEdgesSize);
+
 	vector<Edge> transfers;
 
 	map<Address, Int> nodeBalances;
@@ -136,10 +169,17 @@ vector<Edge> extractTransfers(Address const& _source, Address const& _sink, Int 
 	while (
 		!nodeBalances.empty() &&
 		(nodeBalances.size() > 1 || nodeBalances.begin()->first != _sink)
-	)
-		transfers += extractNextTransfers(_usedEdges, nodeBalances);
+	) {
+        transfers += extractNextTransfers(_usedEdges, nodeBalances);
+    }
 
-	return transfers;
+    log_debug("<- extractTransfers(_source: '%s', _sink: '%s', _amount: %s, _usedEdges: %li, _nodeBalances: %li)",
+              to_string(_source).c_str(),
+              to_string(_sink).c_str(),
+              to_string(_amount).c_str(),
+              initialEdgesSize);
+
+    return transfers;
 }
 
 pair<Int, vector<Edge>> computeFlow(
@@ -149,12 +189,23 @@ pair<Int, vector<Edge>> computeFlow(
 	Int _requestedFlow
 )
 {
-	cerr << "Computing adjacencies..." << endl;
+    log_debug("-> computeFlow(_source: '%s', _sink: '%s', _edges: %li, _requestedFlow: %s)",
+              to_string(_source).c_str(),
+              to_string(_sink).c_str(),
+              _edges.size(),
+              to_string(_requestedFlow).c_str());
 
 	map<Node, map<Node, Int>> adjacencies = computeAdjacencies(_edges);
 	map<Node, map<Node, Int>> capacities = adjacencies;
 
-	cerr << "Number of nodes (including pseudo-nodes): " << capacities.size() << endl;
+    log_debug("   computeFlow(_source: '%s', _sink: '%s', _edges: %li, _requestedFlow: %s): %li nodes (including pseudo-nodes) and %li adjacencies from %li edges",
+              to_string(_source).c_str(),
+              to_string(_sink).c_str(),
+              _edges.size(),
+              to_string(_requestedFlow).c_str(),
+              capacities.size(),
+              adjacencies.size(),
+              _edges.size());
 
 	map<Node, map<Node, Int>> usedEdges;
 
@@ -183,6 +234,12 @@ pair<Int, vector<Edge>> computeFlow(
 			node = prev;
 		}
 	}
+
+    log_debug("<- computeFlow(_source: '%s', _sink: '%s', _edges: %li, _requestedFlow: %s)",
+              to_string(_source).c_str(),
+              to_string(_sink).c_str(),
+              _edges.size(),
+              to_string(_requestedFlow).c_str());
 
 	return {flow, extractTransfers(_source, _sink, flow, usedEdges)};
 }
